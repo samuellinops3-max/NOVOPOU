@@ -1,4 +1,4 @@
-// Pou 3D - PS3 (PSL1GHT)
+// Pou 3D - Otimizado para PS3 (PSL1GHT)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,9 +23,9 @@ static int cur = 0, first_flip = 1;
 static volatile int running = 1;
 
 // Estado do Pou
-static int pou_hunger = 80;   // 0 a 100
-static int pou_health = 90;   // 0 a 100
-static int pou_fun = 85;      // 0 a 100
+static int pou_hunger = 80;
+static int pou_health = 90;
+static int pou_fun = 85;
 static int pou_coins = 150;
 static int game_timer = 0;
 static char status_msg[64] = "Ola! Cuida do teu Pou!";
@@ -119,7 +119,6 @@ static void circle(int cx, int cy, int r, u32 c)
     }
 }
 
-// Fonte de texto minima 3x5
 typedef struct { char c; const char *p; } Glyph;
 static const Glyph glyphs[] = {
     {'0', "###" "#.#" "#.#" "#.#" "###"}, {'1', ".#." "##." ".#." ".#." "###"},
@@ -165,20 +164,16 @@ static void read_pad(void)
     ioPadGetInfo(&info);
     if (info.status[0]) {
         ioPadGetData(0, &d);
-        
-        // Botão X: Alimentar o Pou (+ Fome, + Moedas)
-        if (d.BTN_CROSS) {
+        if (d.BTN_CROSS || d.BTN_DOWN) {
             if (pou_hunger < 100) { pou_hunger += 5; if (pou_hunger > 100) pou_hunger = 100; }
             pou_coins += 2;
             strcpy(status_msg, "Nham nham! Pou comeu bem!");
         }
-        // Botão Círculo: Brincar com o Pou (+ Diversão)
-        if (d.BTN_CIRCLE) {
+        if (d.BTN_CIRCLE || d.BTN_RIGHT) {
             if (pou_fun < 100) { pou_fun += 8; if (pou_fun > 100) pou_fun = 100; }
             strcpy(status_msg, "Yupi! Pou esta super feliz!");
         }
-        // Botão Quadrado: Dar remédio / Cuidar da saúde
-        if (d.BTN_SQUARE) {
+        if (d.BTN_SQUARE || d.BTN_UP) {
             if (pou_health < 100) { pou_health += 10; if (pou_health > 100) pou_health = 100; }
             strcpy(status_msg, "Pou tomou remedio e esta saudavel!");
         }
@@ -188,7 +183,6 @@ static void read_pad(void)
 static void update_game(void)
 {
     game_timer++;
-    // Com o tempo, as necessidades descem devagar
     if (game_timer % 300 == 0) {
         if (pou_hunger > 0) pou_hunger--;
         if (pou_fun > 0) pou_fun--;
@@ -199,65 +193,48 @@ static void update_game(void)
 static void render(void)
 {
     u32 n = W * H;
-    // Fundo acolhedor do quarto do Pou (Azul claro/pastel)
     for (u32 i = 0; i < n; i++) back[i] = 0x00E0F7FA;
 
-    // Chão da sala
     fill_rect(0, (int)H * 3 / 4, W, H / 4, 0x00B2EBF2);
 
-    // Desenhar o Pou 3D no centro do ecrã
     int cx = W / 2;
     int cy = H / 2 + 30;
-    int pou_r = 110; // Tamanho do corpo
+    int pou_r = 110;
 
-    // Sombra do Pou no chão
     circle(cx, cy + pou_r + 15, pou_r * 8 / 10, 0x00B0BEC5);
 
-    // Corpo triangular/arredondado característico do Pou (Cor Bege clássica 0x00D7CCC8)
     for (int r = -pou_r; r <= pou_r; r++) {
         int width = (int)sqrtf((float)(pou_r * pou_r - r * r));
-        // Alarga em baixo para dar a forma de batata/gota
         if (r > 20) width = width * (pou_r - (r - 20) / 4) / pou_r;
         fill_rect(cx - width, cy + r, width * 2, 1, 0x00D7CCC8);
     }
-    // Contorno suave
     circle(cx, cy, pou_r, 0x00A1887F);
 
-    // Olhos 3D expressivos do Pou
     int eye_off = 35;
     int eye_y = cy - 15;
-    // Olho esquerdo
     circle(cx - eye_off, eye_y, 22, 0x00FFFFFF);
     circle(cx - eye_off + 4, eye_y, 10, 0x00212121);
-    // Olho direito
     circle(cx + eye_off, eye_y, 22, 0x00FFFFFF);
     circle(cx + eye_off - 4, eye_y, 10, 0x00212121);
 
-    // Boca sorridente
     fill_rect(cx - 15, cy + 35, 30, 8, 0x005D4037);
 
-    // --- HUD / Barras de Status ---
-    // Barra de Fome (Vermelho/Laranja)
     draw_text("FOME", 50, 40, 2, 0x0037474F);
     fill_rect(150, 42, 200, 20, 0x00CFD8DC);
     fill_rect(150, 42, pou_hunger * 2, 20, 0x0066BB6A);
 
-    // Barra de Saúde (Verde)
     draw_text("SAUDE", 50, 80, 2, 0x0037474F);
     fill_rect(150, 82, 200, 20, 0x00CFD8DC);
     fill_rect(150, 82, pou_health * 2, 20, 0x0042A5F5);
 
-    // Barra de Diversão (Amarelo)
     draw_text("DIVERSAO", 50, 120, 2, 0x0037474F);
     fill_rect(150, 122, 200, 20, 0x00CFD8DC);
     fill_rect(150, 122, pou_fun * 2, 20, 0x00FFCA28);
 
-    // Moedas
     char coin_buf[32];
     sprintf(coin_buf, "MOEDAS: %d", pou_coins);
     draw_text(coin_buf, W - 300, 40, 3, 0x00F57F17);
 
-    // Mensagem de Status e Controles no Rodapé
     draw_text(status_msg, W / 2 - (strlen(status_msg) * 6), H - 120, 2, 0x00455A64);
     draw_text("X: ALIMENTAR   |   O: BRINCAR   |   []: REMEDIO", W / 2 - 310, H - 60, 2, 0x000288D1);
 }
