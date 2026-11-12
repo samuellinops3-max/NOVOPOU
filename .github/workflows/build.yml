@@ -1,73 +1,25 @@
-name: Compilar PKG
+name: Build PS3 PKG
 
 on:
   push:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: ubuntu:20.04
+    container:
+      image: ps3dev/ps3dev:latest
+
     steps:
-      - name: Dependencias
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y curl make git python2 python3 libgmp10 libelf1 zlib1g libssl1.1 bzip2 xz-utils
-          ln -sf /usr/bin/python2 /usr/bin/python
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
+      - name: Compilar PKG do PS3
+        run: make pkg
 
-      - name: Baixar toolchain do PS3
-        run: |
-          curl -sL https://github.com/bucanero/ps3toolchain/releases/download/ubuntu-latest-fad3b5fb/ps3dev-ubuntu-latest-2020-08-31.tar.gz | tar xz -C /opt
-          ls /opt/ps3dev
-          echo "PS3DEV=/opt/ps3dev" >> $GITHUB_ENV
-          echo "PSL1GHT=/opt/ps3dev" >> $GITHUB_ENV
-          echo "/opt/ps3dev/bin" >> $GITHUB_PATH
-          echo "/opt/ps3dev/ppu/bin" >> $GITHUB_PATH
-
-      - name: Gerar icone do Pou (Batata)
-        run: |
-          python3 - <<'PY'
-          import zlib, struct, math
-          W, H = 320, 176
-          cx, cy, rx, ry = W // 2, H // 2, 75, 85
-          raw = b''
-          for y in range(H):
-              raw += b'\x00'
-              for x in range(W):
-                  # Fundo azulado fofo estilo quarto do Pou
-                  px = (224, 247, 250)
-                  
-                  # Forma de batata do Pou (elipse arredondada em baixo)
-                  dx = x - cx
-                  dy = y - cy
-                  # Alarga um pouco na base
-                  effective_ry = ry + 10 if dy > 0 else ry
-                  if (dx*dx) / (rx*rx) + (dy*dy) / (effective_ry*effective_ry) <= 1.0:
-                      px = (215, 204, 200) # Cor bege clássica do Pou
-                      
-                      # Olhos grandes e brilhantes do Pou
-                      if ((x - (cx - 25))**2 / 160 + (y - (cy - 15))**2 / 240 <= 1.0) or \
-                         ((x - (cx + 25))**2 / 160 + (y - (cy - 15))**2 / 240 <= 1.0):
-                          px = (255, 255, 255)
-                      # Pupilas pretas
-                      if ((x - (cx - 22))**2 / 60 + (y - (cy - 15))**2 / 90 <= 1.0) or \
-                         ((x - (cx + 28))**2 / 60 + (y - (cy - 15))**2 / 90 <= 1.0):
-                          px = (33, 33, 33)
-                          
-                  raw += bytes(px)
-          def chunk(t, d):
-              c = struct.pack('>I', len(d)) + t + d
-              return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
-          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
-          open('ICON0.PNG', 'wb').write(png)
-          PY
-
-      - name: Compilar
-        run: make
-
-      - uses: actions/upload-artifact@v4
+      - name: Disponibilizar PKG para download
+        uses: actions/upload-artifact@v4
         with:
-          name: pou-pkg
-          path: pou.pkg
+          name: PipaCombate-PS3
+          path: "*.pkg"
