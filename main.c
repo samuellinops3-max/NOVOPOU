@@ -1,3 +1,5 @@
+// Pipa Combate - feito a partir do Cobra Arena (PSL1GHT)
+// Controles: analogico = mover, X = puxao, R1 = enrolar, L1 = soltar
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,31 +14,43 @@
 
 #define CB_SIZE   (0x100000)
 #define HOST_SIZE (32 * 1024 * 1024)
-#define MAX_KITES 7
-#define PI        3.14159265f
+
+#define WORLD  3200.0f
+#define NKITE  8
+#define PI     3.14159265f
 
 typedef struct {
-    float x, y, z, vx, vy, vz, tilt, anchorX;
-    int alive, pulling, respawn, score, tick;
-    u32 c1, c2;
+    float x, y, z;
+    float vx, vy, vz;
+    float ang;
+    int alive, respawn, score, cuts, inv;
+    u32 col;
+    float line_len;
+    int pulling;
 } Kite;
 
-static u32 get_palette(int idx) {
-    u32 p[8] = {0x00FF2A2A,0x00FFD700,0x0000E676,0x002979FF,0x00D500F9,0x00FF6D00,0x0000E5FF,0x00FF1744};
-    return p[idx & 7];
-}
+static const u32 palette[8] = {
+    0x00FF4D4D, 0x0055D6FF, 0x0066FF66, 0x00FFD23F,
+    0x00C77DFF, 0x00FF8FAB, 0x0000E5C0, 0x00FF9F43
+};
 
+/* ---------- video - IGUAL AO TEU COBRA ---------- */
 static gcmContextData *ctx;
-static u32 W, H, *fb0, *fb1, fboff0, fboff1, *back;
+static u32 W, H;
+static u32 *fb[2];
+static u32 fboff[2];
+static u32 *back;
 static int cur = 0, first_flip = 1;
 static volatile int running = 1;
 
-static void sysutil_cb(u64 status, u64 param, void *usrdata) {
+static void sysutil_cb(u64 status, u64 param, void *usrdata)
+{
     (void)param; (void)usrdata;
     if (status == SYSUTIL_EXIT_GAME) running = 0;
 }
 
-static void init_screen(void) {
+static void init_screen(void)
+{
     void *host = memalign(1024 * 1024, HOST_SIZE);
     rsxInit(&ctx, CB_SIZE, HOST_SIZE, host);
     videoState st;
@@ -49,251 +63,371 @@ static void init_screen(void) {
     W = res.width; H = res.height;
     videoConfiguration vc;
     memset(&vc, 0, sizeof(vc));
-    vc.resolution = resid; vc.format = VIDEO_BUFFER_FORMAT_XRGB;
-    vc.aspect = VIDEO_ASPECT_AUTO; vc.pitch = W * 4;
+    vc.resolution = resid;
+    vc.format = VIDEO_BUFFER_FORMAT_XRGB;
+    vc.aspect = VIDEO_ASPECT_AUTO;
+    vc.pitch = W * 4;
     videoConfigure(VIDEO_PRIMARY, &vc, NULL, 0);
     videoGetState(VIDEO_PRIMARY, 0, &st);
     gcmSetFlipMode(GCM_FLIP_VSYNC);
-    fb0 = (u32 *)rsxMemalign(64, W * H * 4);
-    gcmAddressToOffset(fb0, &fboff0);
-    gcmSetDisplayBuffer(0, fboff0, W * 4, W, H);
-    fb1 = (u32 *)rsxMemalign(64, W * H * 4);
-    gcmAddressToOffset(fb1, &fboff1);
-    gcmSetDisplayBuffer(1, fboff1, W * 4, W, H);
+    for (int i = 0; i < 2; i++) {
+        fb[i] = (u32 *)rsxMemalign(64, W * H * 4);
+        gcmAddressToOffset(fb[i], &fboff[i]);
+        gcmSetDisplayBuffer(i, fboff[i], W * 4, W, H);
+    }
     back = (u32 *)memalign(64, W * H * 4);
     memset(back, 0, W * H * 4);
     gcmResetFlipStatus();
 }
 
-static void present(void) {
-    if (!first_flip) { while (gcmGetFlipStatus() != 0) usleep(200); }
+static void wait_flip(void)
+{
+    while (gcmGetFlipStatus() != 0) usleep(200);
     gcmResetFlipStatus();
-    memcpy((cur == 0) ? fb0 : fb1, back, W * H * 4);
-    gcmSetFlip(ctx, cur); rsxFlushBuffer(ctx); gcmSetWaitFlip(ctx);
-    cur ^= 1; first_flip = 0;
 }
 
-static inline void put_px(int x, int y, u32 c) {
-    if ((u32)x < W && (u32)y < H) back[y * W + x] = c;
+static void present(void)
+{
+    if (!first_flip) wait_flip();
+    else gcmResetFlipStatus();
+    memcpy(fb[cur], back, W * H * 4);
+    gcmSetFlip(ctx, cur);
+    rsxFlushBuffer(ctx);
+    gcmSetWaitFlip(ctx);
+    cur ^= 1;
+    first_flip = 0;
 }
 
-static void fill_rect(int x, int y, int w, int h, u32 c) {
+/* ---------- desenho - IGUAL AO TEU COBRA + linha ---------- */
+static void fill_rect(int x, int y, int w, int h, u32 c)
+{
     int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
-    int x1 = x + w > (int)W ? (int)W : x + w;
-    int y1 = y + h > (int)H ? (int)H : y + h;
-    for (int yy = y0; yy < y1; yy++)
-        for (int xx = x0; xx < x1; xx++) back[yy * W + xx] = c;
+    int x1 = x + w, y1 = y + h;
+    if (x1 > (int)W) x1 = W;
+    if (y1 > (int)H) y1 = H;
+    for (int yy = y0; yy < y1; yy++) {
+        u32 *p = back + yy * W;
+        for (int xx = x0; xx < x1; xx++) p[xx] = c;
+    }
 }
 
-static void draw_line(int x0, int y0, int x1, int y1, u32 c) {
+static void circle(int cx, int cy, int r, u32 c)
+{
+    if (r < 1) r = 1;
+    if (cx + r < 0 || cx - r >= (int)W || cy + r < 0 || cy - r >= (int)H) return;
+    for (int dy = -r; dy <= r; dy++) {
+        int y = cy + dy;
+        if (y < 0 || y >= (int)H) continue;
+        int hw = (int)sqrtf((float)(r * r - dy * dy));
+        int x0 = cx - hw, x1 = cx + hw;
+        if (x0 < 0) x0 = 0;
+        if (x1 >= (int)W) x1 = W - 1;
+        u32 *p = back + y * W;
+        for (int x = x0; x <= x1; x++) p[x] = c;
+    }
+}
+
+static void line_draw(int x0, int y0, int x1, int y1, u32 c)
+{
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1, err = dx + dy, e2;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
     while (1) {
-        put_px(x0, y0, c);
+        if (x0 >= 0 && x0 < (int)W && y0 >= 0 && y0 < (int)H) back[y0 * W + x0] = c;
         if (x0 == x1 && y0 == y1) break;
-        e2 = 2 * err;
+        int e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
 }
 
-static void circle(int cx, int cy, int r, u32 c) {
-    if (r < 1) r = 1;
-    for (int dy = -r; dy <= r; dy++) {
-        int y = cy + dy;
-        if (y < 0 || y >= (int)H) continue;
-        int hw = (int)sqrtf((float)(r * r - dy * dy));
-        for (int x = cx - hw; x <= cx + hw; x++) put_px(x, y, c);
-    }
-}
+typedef struct { char c; const char *p; } Glyph;
+static const Glyph glyphs[] = {
+    {'0', "###" "#.#" "#.#" "#.#" "###"}, {'1', ".#." "##." ".#." ".#." "###"},
+    {'2', "###" "..#" "###" "#.." "###"}, {'3', "###" "..#" "###" "..#" "###"},
+    {'4', "#.#" "#.#" "###" "..#" "..#"}, {'5', "###" "#.." "###" "..#" "###"},
+    {'6', "###" "#.." "###" "#.#" "###"}, {'7', "###" "..#" "..#" "..#" "..#"},
+    {'8', "###" "#.#" "###" "#.#" "###"}, {'9', "###" "#.#" "###" "..#" "###"},
+    {'A', ".#." "#.#" "###" "#.#" "#.#"}, {'B', "##." "#.#" "##." "#.#" "##."},
+    {'C', "###" "#.." "#.." "#.." "###"}, {'E', "###" "#.." "###" "#.." "###"},
+    {'G', "###" "#.." "#.#" "#.#" "###"}, {'M', "#.#" "###" "###" "#.#" "#.#"},
+    {'O', "###" "#.#" "#.#" "#.#" "###"}, {'P', "###" "#.#" "###" "#.." "#.."},
+    {'R', "##." "#.#" "##." "#.#" "#.#"}, {'S', "###" "#.." "###" "..#" "###"},
+    {'T', "###" ".#." ".#." ".#." ".#."}, {'U', "#.#" "#.#" "#.#" "#.#" "###"},
+    {'V', "#.#" "#.#" "#.#" "#.#" ".#."}, {'X', "#.#" "#.#" ".#." "#.#" "#.#"},
+    {'I', "###" ".#." ".#." ".#." "###"}, {'L', "#.." "#.." "#.." "#.." "###"},
+    {'N', "#.#" "###" "###" "#.#" "#.#"}, {'D', "##." "#.#" "#.#" "#.#" "##."},
+    {'F', "###" "#.." "###" "#.." "#.."}, {'H', "#.#" "#.#" "###" "#.#" "#.#"},
+    {'K', "#.#" "#.#" "##." "#.#" "#.#"}, {'W', "#.#" "#.#" "###" "###" "#.#"},
+    {':', "..." ".#." "..." ".#." "..."}, {'/', "..#" "..#" ".#." ".#." "#.."},
+};
 
-static void project_3d(float x, float y, float z, int *sx, int *sy, float *scale) {
-    if (z < 120.0f) z = 120.0f;
-    *scale = 450.0f / z;
-    *sx = (int)(W * 0.5f + x * (*scale));
-    *sy = (int)(H * 0.5f + y * (*scale));
+static const char *find_glyph(char c)
+{
+    for (unsigned i = 0; i < sizeof(glyphs) / sizeof(glyphs[0]); i++)
+        if (glyphs[i].c == c) return glyphs[i].p;
+    return NULL;
 }
-static void draw_kite_3d(const Kite *k) {
-    int sx, sy; float sc;
-    project_3d(k->x, k->y, k->z, &sx, &sy, &sc);
-    int size = (int)(48.0f * sc);
-    if (size < 6) size = 6;
-    int gx = (int)(W * 0.5f + k->anchorX * (450.0f / (k->z + 100.0f)));
-    int midx = (sx + gx) / 2 + (int)(sinf(k->tick * 0.08f) * 18.0f * sc);
-    int midy = (sy + (int)H) / 2 + (int)(25.0f * sc);
-    u32 lcol = k->pulling ? 0x00FFFF00 : 0x00F0F0F0;
-    draw_line(gx, (int)H, midx, midy, lcol);
-    draw_line(midx, midy, sx, sy, lcol);
-    float tx = (float)sx, ty = (float)(sy + size);
-    for (int t = 1; t <= 8; t++) {
-        float nx = sx + sinf(k->tick * 0.15f - t * 0.6f) * (t * 4.5f * sc) - k->tilt * t * 3.0f;
-        float ny = sy + size + t * (12.0f * sc);
-        draw_line((int)tx, (int)ty, (int)nx, (int)ny, 0x00FFFFFF);
-        fill_rect((int)nx - 2, (int)ny - 1, 5, 3, (t % 2 == 0) ? k->c1 : k->c2);
-        tx = nx; ty = ny;
-    }
-    float cs = cosf(k->tilt), sn = sinf(k->tilt);
-    for (int dy = -size; dy <= size; dy++) {
-        int hw = (int)((size - abs(dy)) * 0.72f);
-        for (int dx = -hw; dx <= hw; dx++) {
-            int rx = sx + (int)(dx * cs - dy * sn), ry = sy + (int)(dx * sn + dy * cs);
-            put_px(rx, ry, ((dx < 0 && dy < 0) || (dx >= 0 && dy >= 0)) ? k->c1 : k->c2);
-        }
-    }
-    draw_line(sx + (int)(size * sn), sy - (int)(size * cs), sx - (int)(size * sn), sy + (int)(size * cs), 0x00151515);
-    draw_line(sx - (int)(size * 0.72f * cs), sy - (int)(size * 0.72f * sn), sx + (int)(size * 0.72f * cs), sy + (int)(size * 0.72f * sn), 0x00151515);
-}
-
-static const char *find_glyph(char c) {
-    switch (c) {
-        case '0': return "####.##.##.####"; case '1': return ".#.##..#..#.###";
-        case '2': return "###..#####..###"; case '3': return "###..####..####";
-        case '4': return "#.##.####..#..#"; case '5': return "####..###..####";
-        case '6': return "####..####.####"; case '7': return "###..#..#..#..#";
-        case '8': return "####.#####.####"; case '9': return "####.####..####";
-        case 'A': return ".#.#.######.#.#"; case 'C': return "####..#..#..###";
-        case 'D': return "##.#.##.##.###."; case 'E': return "####..###..####";
-        case 'I': return "###.#..#..#.###"; case 'O': return "####.##.##.####";
-        case 'P': return "####.#####..#.."; case 'R': return "##.#.###.#.##.#";
-        case 'S': return "####..###..####"; case 'T': return "###.#..#..#..#.";
-        case 'U': return "#.##.##.##.####"; case 'V': return "#.##.##.##.#.#.";
-        case 'X': return "#.##.#.#.#.##.#"; default:  return NULL;
-    }
-}
-
-static void draw_text(const char *s, int x, int y, int sc, u32 c) {
+static int text_width(const char *s, int sc) { return (int)strlen(s) * 4 * sc - sc; }
+static void draw_text(const char *s, int x, int y, int sc, u32 c)
+{
     for (; *s; s++) {
         const char *g = find_glyph(*s);
-        if (g) for (int r = 0; r < 5; r++) for (int k = 0; k < 3; k++)
-            if (g[r * 3 + k] == '#') fill_rect(x + k * sc, y + r * sc, sc, sc, c);
+        if (g)
+            for (int r = 0; r < 5; r++)
+                for (int k = 0; k < 3; k++)
+                    if (g[r * 3 + k] == '#') fill_rect(x + k * sc, y + r * sc, sc, sc, c);
         x += 4 * sc;
     }
 }
 
-static Kite kites[MAX_KITES];
-static float pad_ax = 0, pad_ay = 0;
-static int pad_pull = 0, pad_desb = 0, x_prev = 0, dead_t = 0;
+/* ---------- jogo PIPA ---------- */
+static Kite kites[NKITE];
+static float camx = WORLD / 2, camy = WORLD / 2;
+static float wind_x = 1.5f, wind_y = 0.5f;
+static int frame = 0, dead_t = 0, x_prev = 0, game_over = 0;
+static float pad_ax = 0, pad_ay = 0, pad_mag = 0;
+static int pad_x = 0, pad_r1 = 0, pad_l1 = 0;
+
 static float frand(void) { return (float)rand() / (float)RAND_MAX; }
 
-static void spawn_kite(int i) {
-    Kite *k = kites + i;
-    k->x = (i == 0) ? 0.0f : (frand() - 0.5f) * 800.0f;
-    k->y = (i == 0) ? -40.0f : -180.0f + frand() * 200.0f;
-    k->z = (i == 0) ? 380.0f : 320.0f + frand() * 480.0f;
-    k->vx = k->vy = k->vz = k->tilt = 0.0f;
-    k->anchorX = k->x * 0.7f; k->alive = 1; k->pulling = 0; k->respawn = 0;
-    k->tick = rand() % 100; k->c1 = get_palette(i * 2); k->c2 = get_palette(i * 2 + 1);
+static void spawn_kite(int i)
+{
+    Kite *k = &kites[i];
+    k->x = 400 + frand() * (WORLD - 800);
+    k->y = 400 + frand() * (WORLD - 800);
+    k->z = 500 + frand() * 300;
+    k->vx = k->vy = k->vz = 0;
+    k->ang = frand() * 2 * PI;
+    k->alive = 1; k->respawn = 0; k->inv = 120;
+    k->line_len = 900; k->pulling = 0;
+    k->col = palette[i % 8];
 }
 
-static void read_pad(void) {
+static void cut_kite(int victim, int by)
+{
+    Kite *k = &kites[victim];
+    if (k->inv > 0) return;
+    k->alive = 0; k->respawn = 180;
+    if (by >= 0) { kites[by].cuts++; kites[by].score += 100; }
+    if (victim == 0) dead_t = 0;
+}
+
+static void init_game(void)
+{
+    for (int i = 0; i < NKITE; i++) { kites[i].score = 0; kites[i].cuts = 0; spawn_kite(i); }
+    game_over = 0; dead_t = 0;
+}
+
+static void read_pad(void)
+{
     padInfo info; padData d;
-    pad_ax = pad_ay = 0; pad_pull = pad_desb = 0;
+    pad_ax = pad_ay = pad_mag = 0; pad_x = pad_r1 = pad_l1 = 0;
     ioPadGetInfo(&info);
-    if (*(info.status)) {
+    if (info.status[0]) {
         ioPadGetData(0, &d);
         float ax = ((int)d.ANA_L_H - 128) / 128.0f, ay = ((int)d.ANA_L_V - 128) / 128.0f;
-        if (fabsf(ax) < 0.15f) ax = 0;
-        if (fabsf(ay) < 0.15f) ay = 0;
-        if (d.BTN_LEFT) ax = -1.0f;
-        if (d.BTN_RIGHT) ax = 1.0f;
-        if (d.BTN_UP) ay = -1.0f;
-        if (d.BTN_DOWN) ay = 1.0f;
+        if (fabsf(ax) < 0.20f) ax = 0;
+        if (fabsf(ay) < 0.20f) ay = 0;
+        if (d.BTN_LEFT) ax = -1;
+        if (d.BTN_RIGHT) ax = 1;
+        if (d.BTN_UP) ay = -1;
+        if (d.BTN_DOWN) ay = 1;
         pad_ax = ax; pad_ay = ay;
-        pad_pull = d.BTN_CROSS || d.BTN_R2;
-        pad_desb = d.BTN_R1 || d.BTN_CIRCLE;
+        pad_mag = sqrtf(ax * ax + ay * ay);
+        pad_x = d.BTN_CROSS;
+        pad_r1 = d.BTN_R1;
+        pad_l1 = d.BTN_L1;
     }
 }
 
-static int check_relo(const Kite *a, const Kite *b) {
-    if (fabsf(a->z - b->z) > 95.0f) return 0;
-    int ax, ay, bx, by; float sa, sb;
-    project_3d(a->x, a->y, a->z, &ax, &ay, &sa);
-    project_3d(b->x, b->y, b->z, &bx, &by, &sb);
-    return (abs(ax - bx) < (int)(45 * sa) && abs(ay - by) < (int)(55 * sa));
+static void update_kite(int i)
+{
+    Kite *k = &kites[i];
+    if (!k->alive) {
+        if (--k->respawn <= 0) spawn_kite(i);
+        return;
+    }
+    if (k->inv > 0) k->inv--;
+    wind_x += (frand() - 0.5f) * 0.02f;
+    wind_y += (frand() - 0.5f) * 0.02f;
+    if (wind_x > 3) wind_x = 3; if (wind_x < -3) wind_x = -3;
+    if (wind_y > 3) wind_y = 3; if (wind_y < -3) wind_y = -3;
+
+    float tx = 0, ty = 0; int boost = 0;
+    if (i == 0) {
+        tx = pad_ax; ty = pad_ay; boost = pad_x;
+        if (pad_r1) k->line_len -= 8;
+        if (pad_l1) k->line_len += 8;
+    } else {
+        float best = 1e9f; int bi = -1;
+        for (int o = 0; o < NKITE; o++) {
+            if (o == i || !kites[o].alive) continue;
+            float dx = kites[o].x - k->x, dy = kites[o].y - k->y;
+            float d = dx * dx + dy * dy;
+            if (d < best) { best = d; bi = o; }
+        }
+        if (bi >= 0) {
+            float dx = kites[bi].x - k->x, dy = kites[bi].y - k->y;
+            float d = sqrtf(dx * dx + dy * dy) + 1;
+            if ((k->cuts + frame / 600) % 3 != 0) { tx = dx / d; ty = dy / d; }
+            else { tx = -dx / d; ty = -dy / d; }
+            boost = (rand() % 100 < 20) ? 1 : 0;
+        }
+    }
+    if (k->line_len < 400) k->line_len = 400;
+    if (k->line_len > 2000) k->line_len = 2000;
+
+    float power = boost ? 0.9f : 0.45f;
+    k->vx += tx * power + wind_x * 0.08f;
+    k->vy += ty * power + wind_y * 0.08f;
+    if (i == 0 && pad_r1) k->vz += 0.5f;
+    if (i == 0 && pad_l1) k->vz -= 0.3f;
+    k->vz += (600 - k->z) * 0.002f;
+    k->vx *= 0.96f; k->vy *= 0.96f; k->vz *= 0.95f;
+    k->x += k->vx; k->y += k->vy; k->z += k->vz;
+    if (k->x < 200) k->x = 200; if (k->x > WORLD - 200) k->x = WORLD - 200;
+    if (k->y < 200) k->y = 200; if (k->y > WORLD - 200) k->y = WORLD - 200;
+    if (k->z < 200) k->z = 200; if (k->z > 1100) k->z = 1100;
+    if (k->vx != 0 || k->vy != 0) k->ang = atan2f(k->vy, k->vx);
+    k->pulling = boost;
+
+    if (k->inv > 0) return;
+    for (int o = 0; o < NKITE; o++) {
+        if (o == i || !kites[o].alive) continue;
+        float dx = kites[o].x - k->x, dy = kites[o].y - k->y;
+        float dz = kites[o].z - k->z;
+        float d2 = dx * dx + dy * dy + dz * dz * 0.5f;
+        if (d2 < 180 * 180) {
+            int my_power = k->pulling ? 70 : 30;
+            int other_power = kites[o].pulling ? 70 : 30;
+            if (rand() % 100 < my_power && rand() % 100 > other_power) { cut_kite(o, i); return; }
+            else if (rand() % 100 < other_power && rand() % 100 > my_power) { cut_kite(i, o); return; }
+        }
+    }
 }
 
-static void update_game(void) {
-    for (int i = 0; i < MAX_KITES; i++) {
-        Kite *k = kites + i; k->tick++;
-        if (!k->alive) {
-            k->y += 2.5f; k->x += sinf(k->tick * 0.1f) * 3.0f; k->tilt += 0.12f;
-            if (i > 0 && --k->respawn <= 0) spawn_kite(i);
-            continue;
-        }
-        if (i == 0) {
-            k->vx += pad_ax * 0.65f; k->vy += pad_ay * 0.65f; k->pulling = pad_pull;
-            if (pad_pull) { k->vy -= 0.85f; k->vz -= 1.8f; } else { k->vz += 0.6f; }
-            if (pad_desb) { k->vx += sinf(k->tick * 0.35f) * 1.6f; k->tilt = sinf(k->tick * 0.35f) * 0.8f; }
-        } else {
-            k->vx += sinf(k->tick * 0.03f + i) * 0.25f; k->vy += cosf(k->tick * 0.04f + i * 2) * 0.22f;
-            k->vz += sinf(k->tick * 0.02f + i) * 0.8f; k->pulling = ((k->tick / 70) % 4 == 0);
-            if (k->pulling) k->vy -= 0.4f;
-        }
-        k->vx = (k->vx + sinf(k->tick * 0.05f + i) * 0.08f) * 0.90f;
-        k->vy = (k->vy + cosf(k->tick * 0.06f + i) * 0.06f) * 0.90f;
-        k->vz *= 0.92f; k->x += k->vx; k->y += k->vy; k->z += k->vz;
-        if (!pad_desb || i > 0) k->tilt = k->vx * 0.06f;
-        if (k->x < -550) k->x = -550;
-        if (k->x > 550) k->x = 550;
-        if (k->y < -300) k->y = -300;
-        if (k->y > 220) k->y = 220;
-        if (k->z < 240) k->z = 240;
-        if (k->z > 850) k->z = 850;
-    }
-    for (int i = 0; i < MAX_KITES; i++) {
-        Kite *ki = kites + i; if (!ki->alive) continue;
-        for (int j = i + 1; j < MAX_KITES; j++) {
-            Kite *kj = kites + j; if (!kj->alive) continue;
-            if (check_relo(ki, kj)) {
-                if (ki->pulling && (!kj->pulling || ki->y < kj->y)) {
-                    kj->alive = 0; kj->respawn = 180; ki->score += 100;
-                } else if (kj->pulling) {
-                    ki->alive = 0; ki->respawn = 180; kj->score += 100;
-                    if (i == 0) dead_t = 0;
-                }
-            }
-        }
-    }
-    Kite *pl = kites;
-    if (!pl->alive) {
+static void update_game(void)
+{
+    if (game_over) {
         dead_t++;
-        if (dead_t > 50 && pad_pull && !x_prev) { spawn_kite(0); pl->score = 0; }
+        if (dead_t > 60 && pad_x && !x_prev) init_game();
+        x_prev = pad_x; return;
     }
-    x_prev = pad_pull;
+    for (int i = 0; i < NKITE; i++) update_kite(i);
+    if (kites[0].alive) { camx = kites[0].x; camy = kites[0].y; }
+    else {
+        dead_t++;
+        if (dead_t > 90 && pad_x && !x_prev) { spawn_kite(0); dead_t = 0; }
+    }
+    x_prev = pad_x;
+    if (kites[0].cuts >= 5) game_over = 1;
+    for (int i = 1; i < NKITE; i++) if (kites[i].cuts >= 5) game_over = 1;
 }
 
-static void render(void) {
-    for (u32 y = 0; y < H; y++) {
-        u32 col = ((30 + (y * 90) / H) << 16) | ((130 + (y * 95) / H) << 8) | 235;
-        for (u32 x = 0; x < W; x++) back[y * W + x] = col;
+static void draw_kite_shape(int cx, int cy, int r, u32 col, float ang)
+{
+    int x1 = cx + (int)(cosf(ang) * r), y1 = cy + (int)(sinf(ang) * r);
+    int x3 = cx + (int)(cosf(ang + PI) * r * 0.7f), y3 = cy + (int)(sinf(ang + PI) * r * 0.7f);
+    for (int t = 0; t <= r; t++) {
+        int a1 = cx + (int)((x1 - cx) * t / r), b1 = cy + (int)((y1 - cy) * t / r);
+        int a2 = cx + (int)((x3 - cx) * t / r), b2 = cy + (int)((y3 - cy) * t / r);
+        line_draw(a1, b1, a2, b2, col);
     }
-    circle(W - 160, 110, 48, 0x00FFF59D); circle(W - 160, 110, 36, 0x00FFEE58);
-    Kite *pl = kites;
-    int coff = (pl->tick / 3) % (W + 300);
-    circle(coff - 150, 130, 35, 0x00FFFFFF); circle(coff - 115, 125, 42, 0x00FFFFFF); circle(coff - 80, 132, 32, 0x00FFFFFF);
-    int ord[MAX_KITES];
-    for (int i = 0; i < MAX_KITES; i++) ord[i] = i;
-    for (int i = 0; i < MAX_KITES - 1; i++)
-        for (int j = i + 1; j < MAX_KITES; j++)
-            if ((kites + ord[i])->z < (kites + ord[j])->z) { int t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
-    for (int i = 0; i < MAX_KITES; i++) draw_kite_3d(kites + ord[i]);
-    char buf[16]; sprintf(buf, "%d", pl->score / 100);
-    draw_text("CORTADAS", 24, 20, 3, 0x00FFFFFF); draw_text(buf, 24, 45, 5, 0x00FFD700);
-    draw_text("X PUXAR  R1 DESBICAR", 24, (int)H - 35, 3, 0x000D47A1);
-    if (!pl->alive) {
-        fill_rect((int)W / 2 - 150, (int)H / 2 - 65, 300, 130, 0x00111111);
-        draw_text("AVOOU", (int)W / 2 - 76, (int)H / 2 - 42, 8, 0x00FF3D00);
-        if (dead_t > 50) draw_text("APERTE X", (int)W / 2 - 62, (int)H / 2 + 20, 4, 0x00FFFFFF);
+    line_draw(x3, y3, x3 + (int)(cosf(ang + PI) * r), y3 + (int)(sinf(ang + PI) * r), 0x00FFFFFF);
+    circle(cx, cy, r / 3, 0x00FFFFFF);
+    circle(cx, cy, r / 5, col);
+}
+
+static void render(void)
+{
+    frame++;
+    float base = (float)W / 1280.0f;
+    float hw = W / 2.0f, hh = H / 2.0f;
+    for (u32 yy = 0; yy < H; yy++) {
+        u32 c = 0x0087CEEB - (yy * 0x30 / H);
+        u32 *p = back + yy * W;
+        for (u32 xx = 0; xx < W; xx++) p[xx] = c;
+    }
+    for (int i = 0; i < 12; i++) {
+        int cx = (int)((i * 997.0f - camx * 0.2f)) % (int)W;
+        if (cx < 0) cx += W;
+        int cy = 40 + i * 55;
+        circle(cx, cy, 28, 0x00FFFFFF);
+        circle(cx + 30, cy + 8, 22, 0x00FFFFFF);
+        circle(cx - 30, cy + 10, 20, 0x00FFFFFF);
+    }
+    int ground_y = (int)H - 120;
+    fill_rect(0, ground_y, W, 120, 0x003A7D44);
+    for (int i = 0; i < 20; i++) {
+        int bx = (int)((i * 523.0f - camx * 0.5f)) % (int)W;
+        if (bx < 0) bx += W;
+        fill_rect(bx, ground_y - 40 - (i % 3) * 20, 50, 40 + (i % 3) * 20, 0x00808080);
+        fill_rect(bx + 8, ground_y - 30 - (i % 3) * 20, 12, 12, 0x00FFD23F);
+    }
+    draw_text("VENTO", 24, 90, 3, 0x00FFFFFF);
+    int wx = 24 + 80, wy = 115;
+    line_draw(wx, wy, wx + (int)(wind_x * 18), wy + (int)(wind_y * 18), 0x00FF0000);
+    circle(wx + (int)(wind_x * 18), wy + (int)(wind_y * 18), 5, 0x00FF0000);
+
+    for (int i = 0; i < NKITE; i++) {
+        Kite *k = &kites[i];
+        if (!k->alive) continue;
+        float sc = base * (0.7f + k->z / 1000.0f);
+        int sx = (int)((k->x - camx) * sc + hw);
+        int sy = (int)((k->y - camy) * sc + hh - k->z * sc * 0.45f);
+        int ground_x = (int)((k->x - camx) * sc + hw);
+        int ground_y2 = (int)((k->y - camy) * sc + hh + 100);
+        circle(ground_x, ground_y2, (int)(18 * sc), 0x00000000);
+        int hand_x = ground_x, hand_y = ground_y2;
+        if (i == 0) { hand_x = (int)W / 2; hand_y = (int)H - 40; }
+        line_draw(hand_x, hand_y, sx, sy, k->pulling ? 0x00FF0000 : 0x00FFFFFF);
+        if (k->inv > 0 && (frame / 6) % 2 == 0) continue;
+        int r = (int)(38 * sc);
+        draw_kite_shape(sx, sy, r, k->col, k->ang);
+        if (i == 0) draw_text("VOCE", sx - 20, sy + r + 8, 2, 0x00FFFFFF);
+    }
+
+    char buf[64];
+    draw_text("PIPA COMBATE", 24, 20, 4, 0x00FFFFFF);
+    sprintf(buf, "CORTES: %d / 5", kites[0].cuts);
+    draw_text(buf, 24, 48, 3, 0x00FFD23F);
+    sprintf(buf, "SCORE: %d", kites[0].score);
+    draw_text(buf, 24, 68, 3, 0x00FFFFFF);
+    draw_text("ANALOGICO: MOVER  X: PUXAO  R1: ENROLAR  L1: SOLTAR", 24, (int)H - 30, 3, 0x00000000);
+    draw_text("RANKING", (int)W - 220, 20, 3, 0x00FFFFFF);
+    for (int i = 0; i < NKITE; i++) {
+        char b2[32];
+        sprintf(b2, "%d - %d", i == 0 ? 1 : i + 1, kites[i].cuts);
+        draw_text(b2, (int)W - 220, 45 + i * 18, 2, i == 0 ? 0x00FFD23F : 0x00FFFFFF);
+    }
+    if (!kites[0].alive && !game_over) {
+        draw_text("CORTARAM TUA PIPA!", (int)W / 2 - 180, (int)H / 2 - 20, 4, 0x00FF0000);
+        if (dead_t > 90) draw_text("APERTE X PRA VOLTAR", (int)W / 2 - 160, (int)H / 2 + 20, 3, 0x00FFFFFF);
+    }
+    if (game_over) {
+        int bw = text_width("VOCE VENCEU!", 6) + 60, bh = 120;
+        fill_rect((int)W / 2 - bw / 2, (int)H / 2 - bh / 2, bw, bh, 0x00000000);
+        if (kites[0].cuts >= 5) draw_text("VOCE VENCEU!", (int)W / 2 - text_width("VOCE VENCEU!", 6) / 2, (int)H / 2 - 30, 6, 0x00FFD23F);
+        else draw_text("FIM DE JOGO", (int)W / 2 - text_width("FIM DE JOGO", 6) / 2, (int)H / 2 - 30, 6, 0x00FF4D4D);
+        draw_text("APERTE X PRA JOGAR DE NOVO", (int)W / 2 - text_width("APERTE X PRA JOGAR DE NOVO", 3) / 2, (int)H / 2 + 30, 3, 0x00FFFFFF);
     }
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     (void)argc; (void)argv;
-    init_screen(); ioPadInit(7); sysUtilRegisterCallback(0, sysutil_cb, NULL);
+    init_screen();
+    ioPadInit(7);
+    sysUtilRegisterCallback(0, sysutil_cb, NULL);
     srand(20261112);
-    for (int i = 0; i < MAX_KITES; i++) { (kites + i)->score = 0; spawn_kite(i); }
+    init_game();
     while (running) {
-        sysUtilCheckCallback(); read_pad(); update_game(); render(); present();
+        sysUtilCheckCallback();
+        read_pad();
+        update_game();
+        render();
+        present();
     }
     return 0;
 }
