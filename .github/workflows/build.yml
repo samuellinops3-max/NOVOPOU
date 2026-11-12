@@ -1,0 +1,26 @@
+name: Build PS3 PKG
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ps3dev/ps3dev:latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build project
+        run: |
+          make clean
+          make
+
+      - name: Upload PKG artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: Pou-PS3-PKG
+          path: |
+            *.pkg
+            *.self
