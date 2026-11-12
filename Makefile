@@ -1,31 +1,38 @@
-ifeq ($(strip $(PS3DEV)),)
-$(error "Please set PS3DEV in your environment.")
+ifeq ($(strip $(PSL1GHT)),)
+$(error "Defina a variavel PSL1GHT")
 endif
+include $(PSL1GHT)/ppu_rules
 
-include $(PS3DEV)/libps3dev/Makefile.define
+.DEFAULT_GOAL := all
 
-TARGET		:= pou_ps3.elf
-BUILD		:= build
-SOURCE		:= .
-INCLUDE		:= .
-OBJS		:= main.o
+TARGET    := pou
+TITLE     := POU
+APPID     := POU000001
+CONTENTID := UP0001-$(APPID)_00-0000000000000000
+SFOXML    := sfo.xml
+PORTLIBS  := $(PS3DEV)/portlibs/ppu
 
-CFLAGS		:= -O3 -Wall -Wextra -std=gnu99 -I$(PS3DEV)/port/include
-CXXFLAGS	:= $(CFLAGS)
-LDFLAGS		:= -L$(PS3DEV)/port/lib
+MACHDEP := -mhard-float -fmodulo-sched -ffunction-sections -fdata-sections
+CFLAGS  := -O2 -Wall -mcpu=cell $(MACHDEP) -I$(PSL1GHT)/ppu/include -I$(PORTLIBS)/include
+LDFLAGS := $(MACHDEP) -L$(PSL1GHT)/ppu/lib -L$(PORTLIBS)/lib
+LIBS    := -lrsx -lgcm_sys -lio -lsysutil -lrt -llv2 -lm
 
-LIBS		:= -lrsx -lio -lsysutil -llgl -lm -lnet -lpthread
+all: $(TARGET).pkg
 
-all: $(BUILD)/$(TARGET) pkg
+main.o: main.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/$(TARGET): $(OBJS)
-	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
-	ppu-lv2objcopy -O elf32-powerpc $@ pou_ps3.self
-	pkg.py --create pou_ps3.self pkg.conf
+$(TARGET).elf: main.o
+	$(CC) $(LDFLAGS) -o $@ $< $(LIBS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(TARGET).pkg: $(TARGET).elf ICON0.PNG $(SFOXML)
+	rm -rf pkg
+	mkdir -p pkg/USRDIR
+	cp ICON0.PNG pkg/ICON0.PNG
+	$(PS3DEV)/bin/sprxlinker $(TARGET).elf
+	$(PS3DEV)/bin/make_self_npdrm $(TARGET).elf pkg/USRDIR/EBOOT.BIN $(CONTENTID)
+	$(PS3DEV)/bin/sfo.py --title "$(TITLE)" --appid "$(APPID)" -f $(SFOXML) pkg/PARAM.SFO
+	$(PS3DEV)/bin/pkg.py --contentid $(CONTENTID) pkg/ $@
 
 clean:
-	rm -rf $(BUILD) $(OBJS) pou_ps3.self PARAM.SFO
+	rm -rf pkg *.o *.elf *.self *.pkg
