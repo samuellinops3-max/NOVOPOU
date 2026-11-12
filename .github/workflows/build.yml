@@ -19,28 +19,27 @@ jobs:
 
       - name: Baixar toolchain do PS3
         run: |
-          curl -sL https://github.com | tar xz -C /opt
+          curl -sL https://github.com/bucanero/ps3toolchain/releases/download/ubuntu-latest-fad3b5fb/ps3dev-ubuntu-latest-2020-08-31.tar.gz | tar xz -C /opt
+          ls /opt/ps3dev
           echo "PS3DEV=/opt/ps3dev" >> $GITHUB_ENV
           echo "PSL1GHT=/opt/ps3dev" >> $GITHUB_ENV
           echo "/opt/ps3dev/bin" >> $GITHUB_PATH
           echo "/opt/ps3dev/ppu/bin" >> $GITHUB_PATH
 
-      - name: Gerar icone Pipa
+      - name: Gerar icone
         run: |
           python3 - <<'PY'
           import zlib, struct
           W, H = 320, 176
+          circles = [(60 + i * 26, 92 + int(34 * __import__('math').sin(i * 0.5)), 15) for i in range(10)]
           raw = b''
           for y in range(H):
               raw += b'\x00'
               for x in range(W):
-                  px = (40, 140 + y // 3, 230)
-                  dx, dy = abs(x - 160), abs(y - 80)
-                  if dx * 1.4 + dy < 55:
-                      if x < 160 and y < 80: px = (255, 50, 50)
-                      elif x >= 160 and y < 80: px = (255, 215, 0)
-                      elif x < 160 and y >= 80: px = (50, 205, 50)
-                      else: px = (30, 80, 255)
+                  px = (14, 20 + y // 8, 32 + y // 5)
+                  for i, (cx, cy, r) in enumerate(circles):
+                      if (x - cx) ** 2 + (y - cy) ** 2 < r * r:
+                          px = (102, 255, 102) if i % 2 == 0 else (60, 170, 70)
                   raw += bytes(px)
           def chunk(t, d):
               c = struct.pack('>I', len(d)) + t + d
@@ -54,5 +53,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pipa-combate-3d-pkg
+          name: pipa-combate-pkg
           path: pipa.pkg
