@@ -6,7 +6,7 @@ include $(PSL1GHT)/ppu_rules
 .DEFAULT_GOAL := all
 
 TARGET    := pipa
-TITLE     := Pipa Combate 3D
+TITLE     := Pipa Combate
 APPID     := PIPA00001
 CONTENTID := UP0001-$(APPID)_00-0000000000000000
 SFOXML    := sfo.xml
