@@ -1,25 +1,58 @@
-name: Build PS3 PKG
+name: Compilar PKG
 
 on:
   push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: ps3dev/ps3dev:latest
-
+    container: ubuntu:20.04
     steps:
-      - name: Baixar código do repositório
-        uses: actions/checkout@v4
+      - name: Dependencias
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y curl make git python2 python3 libgmp10 libelf1 zlib1g libssl1.1 bzip2 xz-utils
+          ln -sf /usr/bin/python2 /usr/bin/python
 
-      - name: Compilar PKG do PS3
-        run: make pkg
+      - uses: actions/checkout@v4
 
-      - name: Disponibilizar PKG para download
-        uses: actions/upload-artifact@v4
+      - name: Baixar toolchain do PS3
+        run: |
+          curl -sL https://github.com | tar xz -C /opt
+          echo "PS3DEV=/opt/ps3dev" >> $GITHUB_ENV
+          echo "PSL1GHT=/opt/ps3dev" >> $GITHUB_ENV
+          echo "/opt/ps3dev/bin" >> $GITHUB_PATH
+          echo "/opt/ps3dev/ppu/bin" >> $GITHUB_PATH
+
+      - name: Gerar icone Pipa
+        run: |
+          python3 - <<'PY'
+          import zlib, struct
+          W, H = 320, 176
+          raw = b''
+          for y in range(H):
+              raw += b'\x00'
+              for x in range(W):
+                  px = (40, 140 + y // 3, 230)
+                  dx, dy = abs(x - 160), abs(y - 80)
+                  if dx * 1.4 + dy < 55:
+                      if x < 160 and y < 80: px = (255, 50, 50)
+                      elif x >= 160 and y < 80: px = (255, 215, 0)
+                      elif x < 160 and y >= 80: px = (50, 205, 50)
+                      else: px = (30, 80, 255)
+                  raw += bytes(px)
+          def chunk(t, d):
+              c = struct.pack('>I', len(d)) + t + d
+              return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+          png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+          open('ICON0.PNG', 'wb').write(png)
+          PY
+
+      - name: Compilar
+        run: make
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: PipaCombate-PS3
-          path: "*.pkg"
+          name: pipa-combate-3d-pkg
+          path: pipa.pkg
